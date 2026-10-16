@@ -5,11 +5,8 @@ from pathlib import Path
 
 import streamlit as st
 
-from app.core.config import (
-    APP_NAME,
-    GEMINI_MODEL,
-    BASE_DIR,
-)
+from app.core.config import APP_NAME, GEMINI_MODEL, BASE_DIR
+
 from app.database.db import (
     init_database,
     create_conversation,
@@ -17,10 +14,12 @@ from app.database.db import (
     get_messages,
     delete_conversation,
 )
+
 from app.services.chat_service import (
     process_customer_message,
     retry_last_message,
 )
+
 from app.rag.document_loader import load_document
 from app.rag.text_splitter import split_documents
 from app.rag.vector_store import (
@@ -28,6 +27,29 @@ from app.rag.vector_store import (
     vector_store_exists,
 )
 
+from app.services.classification_service import (
+    analyze_customer_message,
+)
+
+from app.services.ticket_service import (
+    process_customer_ticket,
+)
+
+from app.database.ticket_db import (
+    init_ticket_db,
+    get_ticket,
+    list_tickets,
+    message_fingerprint,
+)
+
+from app.dashboard.ticket_dashboard import (
+    render_ticket_dashboard,
+)
+
+
+# ==========================================
+# PAGE CONFIGURATION
+# ==========================================
 
 st.set_page_config(
     page_title=APP_NAME,
@@ -36,32 +58,36 @@ st.set_page_config(
 )
 
 
+# ==========================================
+# DATABASE INITIALIZATION
+# ==========================================
+
 @st.cache_resource
 def initialize_app():
     init_database()
+    init_ticket_db()
     return True
 
 
 initialize_app()
 
-
 UPLOAD_DIR = BASE_DIR / "data" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# ==========================================
+# SESSION STATE
+# ==========================================
+
 def start_new_chat():
-    st.session_state.conversation_id = (
-        create_conversation()
-    )
+    st.session_state.conversation_id = create_conversation()
 
 
 if "conversation_id" not in st.session_state:
     conversations = get_conversations()
 
     if conversations:
-        st.session_state.conversation_id = (
-            conversations[0]["id"]
-        )
+        st.session_state.conversation_id = conversations[0]["id"]
     else:
         start_new_chat()
 
@@ -70,38 +96,207 @@ if "use_rag" not in st.session_state:
     st.session_state.use_rag = True
 
 
-# ----------------------------------
+if "ticket_results" not in st.session_state:
+    st.session_state.ticket_results = {}
+
+
+# ==========================================
+# CUSTOMER CLASSIFICATION & TICKETING
+# ==========================================
+
+def get_ticket_customer_id(conversation_id):
+    return f"conversation-{conversation_id}"
+
+
+def analyze_and_create_ticket(
+    conversation_id,
+    customer_message,
+):
+    classification = analyze_customer_message(
+        customer_message
+    )
+
+    result = process_customer_ticket(
+        customer_id=get_ticket_customer_id(
+            conversation_id
+        ),
+        customer_message=customer_message,
+        classification=classification,
+    )
+
+    return result
+
+
+def render_ticket_result(result):
+    classification = result.get("classification", {})
+
+    st.markdown("#### 🧠 AI Customer Analysis")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        intent = str(
+            classification.get("intent", "unknown")
+        )
+        st.write(
+            "**Intent:**",
+            intent.replace("_", " ").title(),
+        )
+
+    with col2:
+        sentiment = str(
+            classification.get("sentiment", "unknown")
+        )
+        st.write(
+            "**Sentiment:**",
+            sentiment.title(),
+        )
+
+    with col3:
+        urgency = str(
+            classification.get("urgency", "unknown")
+        )
+        st.write(
+            "**Urgency:**",
+            urgency.title(),
+        )
+
+    ticket_id = result.get("ticket_id")
+
+    if ticket_id:
+        ticket = get_ticket(ticket_id)
+
+        if result.get("ticket_created"):
+            st.success(
+                f"🎫 Support Ticket Created: {ticket_id}"
+            )
+        else:
+            st.info(
+                f"🎫 Existing Support Ticket: {ticket_id}"
+            )
+
+        if ticket:
+            status = str(ticket.get("status", "open"))
+            st.caption(
+                "Ticket Status: "
+                + status.replace("_", " ").title()
+            )
+    else:
+        st.info("No support ticket required.")
+
+
+# ==========================================
+# SAVED TICKET ANALYSIS
+# ==========================================
+
+def get_saved_ticket_result(
+    conversation_id,
+    customer_message,
+):
+    customer_id = get_ticket_customer_id(
+        conversation_id
+    )
+
+    fingerprint = message_fingerprint(
+        customer_message
+    )
+
+    # Use the existing public ticket API.
+    # Avoid depending on an internal DB connection.
+    tickets = list_tickets(limit=500)
+
+    for ticket in tickets:
+        if (
+            str(ticket.get("customer_id")) == customer_id
+            and ticket.get("message_hash") == fingerprint
+        ):
+            return {
+                "ticket_created": False,
+                "ticket_id": ticket["ticket_id"],
+                "reason": "existing",
+                "classification": {
+                    "intent": ticket.get(
+                        "intent", "unknown"
+                    ),
+                    "sentiment": ticket.get(
+                        "sentiment", "neutral"
+                    ),
+                    "urgency": ticket.get(
+                        "urgency", "low"
+                    ),
+                    "requires_ticket": True,
+                    "summary": ticket.get(
+                        "summary", ""
+                    ),
+                },
+            }
+
+    return None
+
+
+def render_saved_analysis(
+    conversation_id,
+    message_index,
+    customer_message,
+):
+    key = (conversation_id, message_index)
+
+    result = st.session_state.ticket_results.get(
+        key
+    )
+
+    if result is None:
+        try:
+            result = get_saved_ticket_result(
+                conversation_id,
+                customer_message,
+            )
+        except Exception:
+            result = None
+
+    if result:
+        render_ticket_result(result)
+
+
+# ==========================================
 # SIDEBAR
-# ----------------------------------
+# ==========================================
 
 with st.sidebar:
     st.title("🤖 Support AI")
-    st.caption("Customer Support Platform")
+    st.caption("Intelligent Customer Support Platform")
 
     page = st.radio(
         "Navigation",
-        ["AI Chat", "Knowledge Base"],
+        [
+            "AI Chat",
+            "Knowledge Base",
+            "Support Tickets",
+        ],
     )
 
     st.divider()
 
     if page == "AI Chat":
+
         if st.button(
             "➕ New Conversation",
-            use_container_width=True,
+            width="stretch",
         ):
             start_new_chat()
             st.rerun()
 
         st.subheader("Chat History")
 
-        for conversation in get_conversations():
+        conversations = get_conversations()
+
+        for conversation in conversations:
             conversation_id = conversation["id"]
 
             if st.button(
                 conversation["title"],
                 key=f"chat_{conversation_id}",
-                use_container_width=True,
+                width="stretch",
             ):
                 st.session_state.conversation_id = (
                     conversation_id
@@ -110,11 +305,18 @@ with st.sidebar:
 
         if st.button(
             "🗑️ Delete Current Chat",
-            use_container_width=True,
+            width="stretch",
         ):
-            delete_conversation(
-                st.session_state.conversation_id
-            )
+            old_id = st.session_state.conversation_id
+
+            delete_conversation(old_id)
+
+            st.session_state.ticket_results = {
+                key: value
+                for key, value
+                in st.session_state.ticket_results.items()
+                if key[0] != old_id
+            }
 
             remaining = get_conversations()
 
@@ -140,17 +342,20 @@ with st.sidebar:
             st.info("No knowledge base indexed")
 
     st.divider()
+
     st.caption(f"Model: {GEMINI_MODEL}")
     st.caption("Database: SQLite")
-    st.caption("Phase 2: RAG Integration")
+    st.caption("AI Support + RAG + Ticketing")
 
 
-# ----------------------------------
+# ==========================================
 # KNOWLEDGE BASE PAGE
-# ----------------------------------
+# ==========================================
 
 if page == "Knowledge Base":
+
     st.title("📚 Knowledge Base")
+
     st.write(
         "Upload PDF or TXT documents to provide "
         "company-specific customer support knowledge."
@@ -166,12 +371,15 @@ if page == "Knowledge Base":
         "Process Documents",
         type="primary",
     ):
+
         if not uploaded_files:
             st.warning(
                 "Please upload at least one document."
             )
+
         else:
             for uploaded_file in uploaded_files:
+
                 try:
                     data = uploaded_file.getvalue()
 
@@ -269,52 +477,96 @@ if page == "Knowledge Base":
         )
 
     st.caption(
-        "Use only trusted, non-sensitive documents. "
-        "This local prototype does not yet have "
+        "Upload trusted, non-sensitive documents. "
+        "This prototype does not yet include "
         "user authentication or access controls."
     )
 
 
-# ----------------------------------
-# AI CHAT PAGE
-# ----------------------------------
+# ==========================================
+# SUPPORT TICKETS PAGE
+# ==========================================
 
-else:
+elif page == "Support Tickets":
+
+    render_ticket_dashboard()
+
+
+# ==========================================
+# AI CHAT PAGE
+# ==========================================
+
+elif page == "AI Chat":
+
     st.title("🤖 Intelligent Customer Support")
 
     st.caption(
-        "AI-powered support with Google Gemini + RAG"
+        "AI-powered support using Google Gemini, "
+        "RAG, Customer Classification and Ticketing"
     )
 
     if st.session_state.use_rag:
+
         if vector_store_exists():
             st.success(
-                "RAG mode enabled: company knowledge base"
+                "RAG mode enabled: "
+                "company knowledge base available."
             )
+
         else:
             st.info(
                 "RAG selected, but no knowledge base "
-                "is indexed. General Gemini chat is active."
+                "is indexed. General Gemini chat "
+                "is active."
             )
+
     else:
         st.info(
             "General Gemini chat mode is active."
         )
 
-    current_id = st.session_state.conversation_id
+    current_id = (
+        st.session_state.conversation_id
+    )
 
     messages = get_messages(current_id)
 
     if not messages:
         st.markdown("### 👋 Welcome!")
+
         st.write(
             "Ask a customer support question "
             "to get started."
         )
 
-    for message in messages:
+    # --------------------------------------
+    # DISPLAY CHAT HISTORY
+    # --------------------------------------
+
+    last_user_index = None
+
+    for index, message in enumerate(messages):
+
         with st.chat_message(message["role"]):
+
             st.markdown(message["content"])
+
+            if message["role"] == "user":
+                last_user_index = index
+
+            elif (
+                message["role"] == "assistant"
+                and last_user_index is not None
+            ):
+                render_saved_analysis(
+                    current_id,
+                    last_user_index,
+                    messages[last_user_index]["content"],
+                )
+
+    # --------------------------------------
+    # RETRY FAILED AI RESPONSE
+    # --------------------------------------
 
     pending_reply = (
         bool(messages)
@@ -322,12 +574,14 @@ else:
     )
 
     if pending_reply:
+
         st.warning(
             "The last message is awaiting "
             "an AI response."
         )
 
         if st.button("🔄 Retry AI Response"):
+
             with st.spinner(
                 "Generating response..."
             ):
@@ -336,11 +590,19 @@ else:
                         current_id,
                         use_rag=st.session_state.use_rag,
                     )
+
                 except Exception as error:
-                    st.error("AI response failed.")
+                    st.error(
+                        "AI response failed."
+                    )
                     st.exception(error)
+
                 else:
                     st.rerun()
+
+    # --------------------------------------
+    # NEW CUSTOMER MESSAGE
+    # --------------------------------------
 
     user_prompt = st.chat_input(
         "Ask your customer support question...",
@@ -348,11 +610,16 @@ else:
     )
 
     if user_prompt:
+
         with st.chat_message("user"):
             st.markdown(user_prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("AI is thinking..."):
+
+            with st.spinner(
+                "AI is thinking..."
+            ):
+
                 try:
                     response = process_customer_message(
                         current_id,
@@ -369,4 +636,57 @@ else:
                     st.exception(error)
 
                 else:
+                    # ------------------------------
+                    # CUSTOMER CLASSIFICATION
+                    # ------------------------------
+
+                    try:
+                        ticket_result = (
+                            analyze_and_create_ticket(
+                                current_id,
+                                user_prompt,
+                            )
+                        )
+
+                        updated_messages = (
+                            get_messages(current_id)
+                        )
+
+                        last_user_index = next(
+                            (
+                                index
+                                for index in range(
+                                    len(updated_messages) - 1,
+                                    -1,
+                                    -1,
+                                )
+                                if updated_messages[index]["role"]
+                                == "user"
+                            ),
+                            None,
+                        )
+
+                        if last_user_index is not None:
+
+                            key = (
+                                current_id,
+                                last_user_index,
+                            )
+
+                            st.session_state.ticket_results[
+                                key
+                            ] = ticket_result
+
+                        render_ticket_result(
+                            ticket_result
+                        )
+
+                    except Exception as error:
+                        st.warning(
+                            "AI response generated, "
+                            "but ticket analysis is "
+                            "temporarily unavailable."
+                        )
+                        st.exception(error)
+
                     st.rerun()

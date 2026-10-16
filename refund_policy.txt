@@ -1,0 +1,14 @@
+﻿Company Refund Policy
+
+Duplicate Payment:
+If a customer is charged twice for one order,
+they should contact the billing support team.
+
+The customer should provide the order ID and
+transaction reference number.
+
+The billing team will investigate duplicate
+payments before approving a refund.
+
+Customers must never share passwords, OTPs,
+or complete card details.

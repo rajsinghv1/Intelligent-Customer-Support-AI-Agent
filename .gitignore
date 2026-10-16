@@ -1,22 +1,59 @@
-# Secrets
+
+# ==========================================
+# Secrets and API Keys
+# ==========================================
 .env
 .env.*
-.env.example
+!.env.example
+*.pem
+*.key
 
+# ==========================================
 # Python
+# ==========================================
 .venv/
+venv/
+myenv/
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
 
+# ==========================================
 # Database
+# ==========================================
 *.db
+*.sqlite
 *.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
 
-# Uploaded documents and vector database
+# ==========================================
+# Uploaded Documents and FAISS
+# ==========================================
 data/uploads/
 data/vector_store/
 data/knowledge_base/
 
+# ==========================================
 # Cache
+# ==========================================
 .cache/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ==========================================
+# Logs and Backups
+# ==========================================
+*.log
+logs/
+*.bak
+
+# ==========================================
+# IDE and OS
+# ==========================================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
