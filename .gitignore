@@ -1,0 +1,22 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Database
+*.db
+*.sqlite3
+
+# Uploaded documents and vector database
+data/uploads/
+data/vector_store/
+data/knowledge_base/
+
+# Cache
+.cache/
+.pytest_cache/
